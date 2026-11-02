@@ -1,0 +1,27 @@
+#!/bin/sh
+# Launch Claude Code with OpenTelemetry export pointed at the local collector.
+# Usage: bin/claude-otel [any claude arguments]
+#
+# Why --settings and not just environment variables: an "env" block in your user
+# settings (~/.claude/settings.json) beats the shell environment, so if another tool
+# already configured an exporter there, plain exports are silently ignored.
+# Settings passed on the command line rank above user settings.
+# (Exporter settings in a repository's own .claude/settings.json are ignored, too.)
+endpoint="${OTEL_ENDPOINT_OVERRIDE:-http://localhost:4317}"
+
+settings=$(cat <<EOF
+{"env": {
+  "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+  "OTEL_LOGS_EXPORTER": "otlp",
+  "OTEL_METRICS_EXPORTER": "otlp",
+  "OTEL_TRACES_EXPORTER": "none",
+  "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+  "OTEL_EXPORTER_OTLP_ENDPOINT": "$endpoint",
+  "OTEL_EXPORTER_OTLP_HEADERS": "",
+  "OTEL_LOGS_EXPORT_INTERVAL": "5000",
+  "OTEL_METRIC_EXPORT_INTERVAL": "10000"
+}}
+EOF
+)
+
+exec claude --settings "$settings" "$@"

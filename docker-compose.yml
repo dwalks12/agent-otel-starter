@@ -1,0 +1,38 @@
+# ClickHouse stores the telemetry; the OpenTelemetry Collector receives it from
+# Claude Code over OTLP and writes it into ClickHouse.
+name: agent-otel-starter
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    environment:
+      # Local demo only: lets the passwordless default user connect over the network.
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    ports:
+      - "127.0.0.1:8123:8123"   # HTTP: the app, the hooks and query.sh use this
+    volumes:
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - clickhouse-data:/var/lib/clickhouse
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.130.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel/config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"   # OTLP gRPC (Claude Code)
+      - "127.0.0.1:4318:4318"   # OTLP HTTP (seed script)
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  clickhouse-data:

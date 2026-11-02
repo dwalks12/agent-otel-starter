@@ -1,0 +1,17 @@
+# Swift build output
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/
+xcuserdata/
+
+# Editors and OS
+.DS_Store
+.vscode/
+.idea/
+
+# Local-only files
+*.log
+.env
+# Written by scripts/install-hooks.sh if you install the hooks into this repo itself
+.claude/settings.local.json

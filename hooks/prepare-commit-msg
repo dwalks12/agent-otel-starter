@@ -1,0 +1,15 @@
+#!/bin/sh
+# Stamp the commit with the Claude Code session that is open in this repo.
+# Naive on purpose (see README): it also stamps commits you make by hand
+# while a session is open.
+case "$2" in merge|squash) exit 0 ;; esac   # leave merges and squashes alone
+
+f="$(git rev-parse --git-dir)/agent-session"
+[ -s "$f" ] || exit 0
+
+# Strip anything but id characters: a newline here would let a value forge other trailers.
+sid="$(tr -cd 'A-Za-z0-9-' < "$f")"
+[ -n "$sid" ] || exit 0
+
+git interpret-trailers --in-place --if-exists doNothing \
+  --trailer "Agent-Session-Id: $sid" "$1"
