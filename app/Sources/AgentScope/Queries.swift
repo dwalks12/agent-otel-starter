@@ -52,6 +52,16 @@ enum Queries {
         LIMIT 200
         """
 
+    /// The first captured prompt of each session: the session's title in the sidebar.
+    static let firstPrompts = """
+        SELECT LogAttributes['session.id'] AS session_id,
+               argMin(LogAttributes['prompt'], Timestamp) AS prompt
+        FROM otel.otel_logs
+        WHERE LogAttributes['event.name'] = 'user_prompt' AND LogAttributes['prompt'] != ''
+          AND Timestamp >= now64(9) - INTERVAL 30 DAY
+        GROUP BY session_id
+        """
+
     static func models(session: String) -> String {
         """
         SELECT LogAttributes['model'] AS model, \(tokenColumns)
@@ -59,6 +69,21 @@ enum Queries {
         WHERE \(apiRequests) AND LogAttributes['session.id'] = \(quoted(session))
         GROUP BY model
         ORDER BY usd DESC NULLS LAST
+        """
+    }
+
+    /// Every record of one session, in order: the raw material for the transcript.
+    /// Ordered by time, then by Claude Code's own per-process event.sequence.
+    static func events(session: String) -> String {
+        """
+        SELECT toUInt64OrZero(LogAttributes['event.sequence']) AS seq,
+               toUnixTimestamp64Milli(Timestamp) AS ts_ms,
+               LogAttributes['event.name'] AS ev,
+               mapFilter((k, v) -> k NOT LIKE 'user.%' AND k NOT LIKE 'organization.%', LogAttributes) AS attrs
+        FROM otel.otel_logs
+        WHERE LogAttributes['session.id'] = \(quoted(session))
+        ORDER BY ts_ms, seq
+        LIMIT 5000
         """
     }
 

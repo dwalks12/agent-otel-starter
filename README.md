@@ -11,7 +11,7 @@ Claude Code ──OTLP──▶ OpenTelemetry Collector ──▶ ClickHouse ◀
 - **Claude Code** already exports OpenTelemetry: one log record per API request, with tokens and cost.
 - The **OpenTelemetry Collector** receives it and writes it into **ClickHouse** (`otel.otel_logs`).
 - Two **git hooks** stamp each commit with the session that wrote it, so spend joins to code.
-- **AgentScope** is a small macOS app: a live tokens-per-minute gauge, 24-hour totals, the last hour per minute, and every session with its models and commits.
+- **AgentScope** is a small macOS app. **Live** has a tokens-per-minute gauge, 24-hour totals and the last hour per minute. **Session** shows one session's full transcript: every prompt, Claude's replies, each tool call with its input and result, and each model call with tokens and cost, plus per-tool stats, models and commits.
 
 Companion to the talk *Tracing coding agents with OpenTelemetry* (AI Tinkerers Calgary). The production version of this idea is [Terma](https://terma.ai).
 
@@ -77,7 +77,7 @@ It's a demo, kept small enough to read in one sitting. In production you'd want:
 - **More harnesses.** Codex and Copilot export OpenTelemetry too, with different names for the same things. Normalize each one at the edge, once.
 - **Idempotent storage.** Exporters retry. Give events deterministic ids and dedupe them (for example with `ReplacingMergeTree`).
 - **Estimated costs that say so.** Sources that report tokens but no cost need a price table, and the result labelled as an estimate. Here, a missing cost is left out and counted, never treated as $0.
-- **Privacy.** Telemetry export is user-wide, so this sends every Claude Code session you run with `bin/claude-otel`, from any repo. It all stays on your machine here; don't point it at a shared server without filtering.
+- **Privacy.** `bin/claude-otel` records prompt text, Claude's replies and tool inputs so the app can show transcripts (Claude Code reports tool output sizes, not their content). Run it with `AGENT_OTEL_CONTENT=0` to record usage only. Telemetry export is user-wide, so this sends every Claude Code session you run with `bin/claude-otel`, from any repo. It all stays on your machine here; don't point it at a shared server without filtering.
 
 ## Troubleshooting
 

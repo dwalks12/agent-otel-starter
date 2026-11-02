@@ -57,6 +57,8 @@ struct SessionRow: Decodable, Identifiable, Hashable {
     var started: TimeInterval
     var lastSeen: TimeInterval
     var usage: Usage
+    /// Filled in from a separate query; nil when prompts weren't captured.
+    var title: String?
 
     var id: String { sessionID }
     var startedAt: Date { Date(timeIntervalSince1970: started) }
@@ -77,8 +79,16 @@ struct SessionRow: Decodable, Identifiable, Hashable {
         usage = try Usage(from: decoder)
     }
 
-    static func == (a: SessionRow, b: SessionRow) -> Bool { a.sessionID == b.sessionID && a.usage == b.usage }
+    var modelList: [String] { models.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+
+    static func == (a: SessionRow, b: SessionRow) -> Bool { a.sessionID == b.sessionID && a.usage == b.usage && a.title == b.title }
     func hash(into hasher: inout Hasher) { hasher.combine(sessionID) }
+}
+
+struct FirstPrompt: Decodable {
+    var sessionID: String
+    var prompt: String
+    enum CodingKeys: String, CodingKey { case prompt, sessionID = "session_id" }
 }
 
 struct ModelRow: Decodable, Identifiable {

@@ -11,9 +11,10 @@ final class TelemetryStore {
     var totals = Totals.empty
     var perMinute: [MinuteBucket] = []
     var sessions: [SessionRow] = []
-    var selectedSessionID: String? { didSet { if selectedSessionID != oldValue { models = []; commits = [] } } }
+    var selectedSessionID: String? { didSet { if selectedSessionID != oldValue { models = []; commits = []; transcript = [] } } }
     var models: [ModelRow] = []
     var commits: [CommitRow] = []
+    var transcript: [TranscriptItem] = []
     var error: String?
     var lastUpdated: Date?
 
@@ -22,6 +23,7 @@ final class TelemetryStore {
     }
 
     var selectedSession: SessionRow? { sessions.first { $0.sessionID == selectedSessionID } }
+    var maxSessionSpend: Double { sessions.compactMap(\.usage.usd).max() ?? 0 }
 
     /// Tokens per minute over the trailing 60 seconds: the gauge's needle.
     var tokensPerMinute: Double { live.totalTokens ?? 0 }
@@ -45,17 +47,21 @@ final class TelemetryStore {
             async let totals = client.rows(Queries.totals, as: Totals.self)
             async let perMinute = client.rows(Queries.perMinute, as: MinuteBucket.self)
             async let sessions = client.rows(Queries.sessions, as: SessionRow.self)
+            async let prompts = client.rows(Queries.firstPrompts, as: FirstPrompt.self)
             self.live = try await live.first ?? .empty
             self.totals = try await totals.first ?? .empty
             self.perMinute = try await perMinute
-            self.sessions = try await sessions
+            let titles = Dictionary(try await prompts.map { ($0.sessionID, $0.prompt) }, uniquingKeysWith: { a, _ in a })
+            self.sessions = try await sessions.map { var row = $0; row.title = titles[row.sessionID]; return row }
 
             if selectedSessionID == nil { selectedSessionID = self.sessions.first?.sessionID }
             if let id = selectedSessionID {
                 async let models = client.rows(Queries.models(session: id), as: ModelRow.self)
                 async let commits = client.rows(Queries.commits(session: id), as: CommitRow.self)
+                async let events = client.rows(Queries.events(session: id), as: RawEvent.self)
                 self.models = try await models
                 self.commits = try await commits
+                self.transcript = Transcript.build(try await events)
             }
             error = nil
             lastUpdated = .now

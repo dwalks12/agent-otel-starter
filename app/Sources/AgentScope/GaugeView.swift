@@ -48,7 +48,7 @@ struct GaugeView: View {
                 VStack(spacing: 2) {
                     Text(Format.tokens(value))
                         .font(.system(size: size * 0.13, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Theme.text)
+                        .foregroundStyle(fraction > 0.85 ? Theme.hot : Theme.text)
                         .contentTransition(.numericText())
                     Text("TOKENS / MIN")
                         .font(.system(size: max(10, size * 0.035), weight: .semibold, design: .monospaced))
@@ -127,6 +127,7 @@ struct TokenMixBar: View {
     var body: some View {
         let total = usage.totalTokens
         VStack(alignment: .leading, spacing: 10) {
+            Text("MIX RIGHT NOW").font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.5).foregroundStyle(Theme.muted)
             GeometryReader { proxy in
                 HStack(spacing: 2) {
                     if let total, total > 0 {
@@ -139,7 +140,7 @@ struct TokenMixBar: View {
                     }
                 }
             }
-            .frame(height: 8)
+            .frame(height: 10)
             .clipShape(Capsule())
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 6) {
