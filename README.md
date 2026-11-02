@@ -27,10 +27,21 @@ cd agent-otel-starter
 
 That starts ClickHouse and the collector in Docker, sends some fake sessions, and opens the app. Drop `--seed` once you have real data.
 
-Then use Claude Code with telemetry on:
+Then try the demo repo: a tiny shop checkout with one failing test and the hooks already installed.
 
 ```sh
-scripts/install-hooks.sh ~/code/my-repo     # optional: cost per commit
+scripts/make-demo.sh                        # creates ~/agent-otel-demo (--reset to start over)
+cd ~/agent-otel-demo && /path/to/agent-otel-starter/bin/claude-otel
+> run test_cart.py and make it pass, then commit the fix
+git log -1                                  # the commit ends with Agent-Session-Id: <session>
+```
+
+In AgentScope, open the session: the Commits tab shows the fix and the Spend card shows its cost per commit.
+
+To use it on your own code instead:
+
+```sh
+scripts/install-hooks.sh ~/code/my-repo
 cd ~/code/my-repo && /path/to/agent-otel-starter/bin/claude-otel
 ```
 
@@ -46,6 +57,7 @@ Sessions show up in the app within about five seconds. `./run.sh down` stops the
 | `clickhouse/init.sql` | The `otel.agent_commits` table the post-commit hook writes |
 | `bin/claude-otel` | Runs `claude` with the OpenTelemetry env vars set |
 | `hooks/` | `prepare-commit-msg` adds `Agent-Session-Id`; `post-commit` records the commit |
+| `scripts/make-demo.sh` | Creates a demo repo with one failing test and the hooks installed |
 | `scripts/install-hooks.sh` | Installs the hooks and a Claude Code `SessionStart` hook into a repo |
 | `scripts/seed.sh` | Fake data; `--live` keeps a session running so the gauge moves |
 | `scripts/query.sh` | Runs a `.sql` file against ClickHouse |
