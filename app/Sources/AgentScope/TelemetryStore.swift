@@ -6,6 +6,7 @@ import Observation
 @Observable
 final class TelemetryStore {
     private let client: ClickHouseClient
+    private let relayClient: RelayClient
 
     var live = Usage.empty
     var totals = Totals.empty
@@ -17,9 +18,23 @@ final class TelemetryStore {
     var transcript: [TranscriptItem] = []
     var error: String?
     var lastUpdated: Date?
+    /// nil while the relay can't be reached.
+    var relay: RelayState?
+    var relayError: String?
 
-    init(client: ClickHouseClient) {
+    init(client: ClickHouseClient, relay: RelayClient) {
         self.client = client
+        self.relayClient = relay
+    }
+
+    func refreshRelay() async {
+        do { relay = try await relayClient.state(); relayError = nil }
+        catch { relay = nil; relayError = error.localizedDescription }
+    }
+
+    func setPolicy(_ rule: PolicyRule, redact: Bool) async {
+        do { relay = try await relayClient.set(rule.id, to: redact ? "redact" : "keep"); relayError = nil }
+        catch { relayError = error.localizedDescription }
     }
 
     var selectedSession: SessionRow? { sessions.first { $0.sessionID == selectedSessionID } }
@@ -37,6 +52,7 @@ final class TelemetryStore {
     func run() async {
         while !Task.isCancelled {
             await refresh()
+            await refreshRelay()
             try? await Task.sleep(for: .seconds(2))
         }
     }
@@ -52,7 +68,7 @@ final class TelemetryStore {
             self.totals = try await totals.first ?? .empty
             self.perMinute = try await perMinute
             let titles = Dictionary(try await prompts.map { ($0.sessionID, $0.prompt) }, uniquingKeysWith: { a, _ in a })
-            self.sessions = try await sessions.map { var row = $0; row.title = titles[row.sessionID]; return row }
+            self.sessions = try await sessions.map { var row = $0; row.title = titles[row.sessionID].map { $0 == redactedValue ? "Redacted prompt" : $0 }; return row }
 
             if selectedSessionID == nil { selectedSessionID = self.sessions.first?.sessionID }
             if let id = selectedSessionID {

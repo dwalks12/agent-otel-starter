@@ -5,7 +5,7 @@ struct ContentView: View {
     @Bindable var store: TelemetryStore
 
     enum Page: String, CaseIterable, Identifiable {
-        case live = "Live", session = "Session"
+        case live = "Live", session = "Session", policy = "Policy"
         var id: String { rawValue }
     }
 
@@ -24,6 +24,7 @@ struct ContentView: View {
                     if let error = store.error { ErrorBanner(message: error) }
                     switch page {
                     case .live: livePage
+                    case .policy: PolicyPage(store: store)
                     case .session:
                         if let session = store.selectedSession {
                             SessionDetail(session: session, models: store.models, commits: store.commits, transcript: store.transcript)
@@ -49,13 +50,20 @@ struct ContentView: View {
 
     // MARK: Header
 
+    private var subtitle: String {
+        switch page {
+        case .live: "Tokens your agents are burning on this machine, read from your local ClickHouse"
+        case .session: "Every prompt, reply, model call and tool call, in order"
+        case .policy: "What gets stored. The relay applies this before anything reaches ClickHouse"
+        }
+    }
+
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(page == .live ? "Live burn" : "Session")
+                Text(page == .live ? "Live burn" : page == .session ? "Session" : "Policy")
                     .font(.system(size: 30, weight: .bold, design: .rounded)).foregroundStyle(Theme.text)
-                Text(page == .live ? "Tokens your agents are burning on this machine, read from your local ClickHouse"
-                                   : "Every prompt, reply, model call and tool call, in order")
+                Text(subtitle)
                     .font(.system(size: 13)).foregroundStyle(Theme.body)
             }
             Spacer()

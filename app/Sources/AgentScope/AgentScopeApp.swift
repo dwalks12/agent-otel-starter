@@ -4,9 +4,9 @@ import SwiftUI
 @main
 struct AgentScopeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var store = TelemetryStore(client: ClickHouseClient(
-        baseURL: URL(string: ProcessInfo.processInfo.environment["AGENT_OTEL_CLICKHOUSE_URL"] ?? "http://localhost:8123")!
-    ))
+    @State private var store = TelemetryStore(
+        client: ClickHouseClient(baseURL: URL(string: env("AGENT_OTEL_CLICKHOUSE_URL") ?? "http://localhost:8123")!),
+        relay: RelayClient(baseURL: URL(string: env("AGENT_OTEL_RELAY_URL") ?? "http://localhost:4318")!))
 
     var body: some Scene {
         WindowGroup("AgentScope") {
@@ -17,6 +17,8 @@ struct AgentScopeApp: App {
         .windowStyle(.hiddenTitleBar)
     }
 }
+
+private func env(_ name: String) -> String? { ProcessInfo.processInfo.environment[name] }
 
 /// `swift run` starts a bare executable; this makes it a regular foreground app with a Dock icon.
 final class AppDelegate: NSObject, NSApplicationDelegate {

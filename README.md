@@ -3,15 +3,17 @@
 See what your coding agents are spending, on your own machine, with open-source parts:
 
 ```
-Claude Code ──OTLP──▶ OpenTelemetry Collector ──▶ ClickHouse ◀── AgentScope (SwiftUI app)
-     │                                                ▲
-     └── git hooks: Agent-Session-Id trailer ─────────┘  cost per commit
+Claude Code ──OTLP──▶ policy relay ──▶ OpenTelemetry Collector ──▶ ClickHouse ◀── AgentScope (SwiftUI app)
+     │                     ▲                                          ▲              │
+     │                     └───────────── keep / redact ──────────────┼──────────────┘
+     └── git hooks: Agent-Session-Id trailer ─────────────────────────┘  cost per commit
 ```
 
 - **Claude Code** already exports OpenTelemetry: one log record per API request, with tokens and cost.
+- A small **policy relay** sits in front of the collector and redacts whatever your policy says (prompts, replies, tool inputs, identity) before it's stored.
 - The **OpenTelemetry Collector** receives it and writes it into **ClickHouse** (`otel.otel_logs`).
 - Two **git hooks** stamp each commit with the session that wrote it, so spend joins to code.
-- **AgentScope** is a small macOS app. **Live** has a tokens-per-minute gauge, 24-hour totals and the last hour per minute. **Session** shows one session's full transcript: every prompt, Claude's replies, each tool call with its input and result, and each model call with tokens and cost, plus per-tool stats, models and commits.
+- **AgentScope** is a small macOS app. **Live** has a tokens-per-minute gauge, 24-hour totals and the last hour per minute. **Policy** sets what the relay keeps or redacts. **Session** shows one session's full transcript: every prompt, Claude's replies, each tool call with its input and result, and each model call with tokens and cost, plus per-tool stats, models and commits.
 
 Companion to the talk *Tracing coding agents with OpenTelemetry* (AI Tinkerers Calgary). The production version of this idea is [Terma](https://terma.ai).
 
@@ -26,6 +28,8 @@ cd agent-otel-starter
 ```
 
 That starts ClickHouse and the collector in Docker, sends some fake sessions, and opens the app. Drop `--seed` once you have real data.
+
+To show only real sessions, run `./run.sh --fresh`. It wipes everything stored so far (seed data, old sessions, commits), so the app starts empty and fills with the sessions you start from then on. Only sessions launched through `bin/claude-otel` are recorded. `scripts/reset-data.sh` does the same wipe while the app is running.
 
 Then try the demo repo: a tiny shop checkout with one failing test and the hooks already installed.
 
@@ -51,18 +55,42 @@ Sessions show up in the app within about five seconds. `./run.sh down` stops the
 
 | Path | What it does |
 |---|---|
-| `run.sh` | The one command: starts the stack, optionally seeds it, builds and opens the app |
-| `docker-compose.yml` | ClickHouse 25.8 and OpenTelemetry Collector contrib 0.130.0, bound to localhost |
-| `otel/config.yaml` | OTLP in (gRPC 4317, HTTP 4318), ClickHouse out |
+| `run.sh` | The one command: starts the stack, optionally wipes (`--fresh`) or seeds (`--seed`) it, builds and opens the app |
+| `docker-compose.yml` | ClickHouse 25.8, OpenTelemetry Collector contrib 0.130.0 and the relay; only ClickHouse and the relay are reachable, on localhost |
+| `relay/relay.py` | The policy relay: OTLP/HTTP JSON in on 4318, redacts, forwards to the collector; `/policy` API |
+| `otel/config.yaml` | OTLP in (from the relay, inside Docker), ClickHouse out |
 | `clickhouse/init.sql` | The `otel.agent_commits` table the post-commit hook writes |
 | `bin/claude-otel` | Runs `claude` with the OpenTelemetry env vars set |
 | `hooks/` | `prepare-commit-msg` adds `Agent-Session-Id`; `post-commit` records the commit |
 | `scripts/make-demo.sh` | Creates a demo repo with one failing test and the hooks installed |
+| `scripts/reset-data.sh` | Empties the stored sessions, metrics and commits (the tables stay) |
 | `scripts/install-hooks.sh` | Installs the hooks and a Claude Code `SessionStart` hook into a repo |
 | `scripts/seed.sh` | Fake data; `--live` keeps a session running so the gauge moves |
 | `scripts/query.sh` | Runs a `.sql` file against ClickHouse |
 | `sql/` | `discover.sql`, `cost-per-session.sql`, `cost-per-commit.sql` |
 | `app/` | AgentScope, a SwiftUI app (Swift Package; `swift run` builds it) |
+
+## Policy: keep or redact, before storage
+
+The relay (`relay/relay.py`, standard-library Python, about 200 lines) is the only way telemetry gets in: the collector has no host ports. Claude Code sends it OTLP/HTTP JSON, the relay applies the policy to every attribute, then forwards to the collector.
+
+| Rule | Attributes it replaces with `[redacted]` |
+|---|---|
+| `prompts` | `prompt`, `prompt_text` |
+| `responses` | `response` |
+| `tool_inputs` | `tool_parameters`, `tool_input` |
+| `identity` | `user.email`, `user.id`, `user.account_id`, `user.account_uuid`, `organization.id` |
+
+Each rule is `keep` or `redact`. Lengths, tokens, cost and tool names still come through, so the dashboards keep working; the transcript shows a lock where text was removed. Each redacted log record gets a `policy.redacted` attribute listing which rules applied.
+
+Change it on the **Policy** page, or over HTTP:
+
+```sh
+curl localhost:4318/policy                                   # current policy and counters
+curl -X PUT localhost:4318/policy -d '{"prompts":"redact"}'  # any subset of the rules
+```
+
+The policy is saved in a Docker volume, so it survives restarts. It applies to new telemetry only; `scripts/reset-data.sh` clears what's already stored. Protobuf payloads are refused (HTTP 415) rather than forwarded unchecked.
 
 ## Try the SQL
 
@@ -89,14 +117,16 @@ It's a demo, kept small enough to read in one sitting. In production you'd want:
 - **More harnesses.** Codex and Copilot export OpenTelemetry too, with different names for the same things. Normalize each one at the edge, once.
 - **Idempotent storage.** Exporters retry. Give events deterministic ids and dedupe them (for example with `ReplacingMergeTree`).
 - **Estimated costs that say so.** Sources that report tokens but no cost need a price table, and the result labelled as an estimate. Here, a missing cost is left out and counted, never treated as $0.
-- **Privacy.** `bin/claude-otel` records prompt text, Claude's replies and tool inputs so the app can show transcripts (Claude Code reports tool output sizes, not their content). Run it with `AGENT_OTEL_CONTENT=0` to record usage only. Telemetry export is user-wide, so this sends every Claude Code session you run with `bin/claude-otel`, from any repo. It all stays on your machine here; don't point it at a shared server without filtering.
+- **A real policy engine.** The relay is a demo: one global policy, no auth on `/policy`, exact attribute names. In production you'd want per-team policies, an audit trail of changes, and pattern-based scrubbing (secrets in tool inputs, for example).
+- **Privacy.** `bin/claude-otel` records prompt text, Claude's replies and tool inputs so the app can show transcripts (Claude Code reports tool output sizes, not their content). Run it with `AGENT_OTEL_CONTENT=0` to record usage only, or use the Policy page to redact some of it at the relay. Telemetry export is user-wide, so this sends every Claude Code session you run with `bin/claude-otel`, from any repo. It all stays on your machine here; don't point it at a shared server without filtering.
 
 ## Troubleshooting
 
 - **App says it can't reach ClickHouse:** `docker compose ps`; both services should be up. `./run.sh` starts them.
 - **No sessions after using Claude Code:** check you launched it via `bin/claude-otel`, then `scripts/query.sh sql/discover.sql`. Collector logs: `docker compose logs otel-collector`.
 - **Why `bin/claude-otel` passes `--settings`:** an `env` block in `~/.claude/settings.json` beats your shell environment. If another tool already set up an exporter there, plain `export OTEL_...` lines are silently ignored. Settings passed on the command line rank above user settings, so the wrapper wins. Your other telemetry flags from user settings (for example `OTEL_LOG_USER_PROMPTS`) still apply, and that data stays in your local ClickHouse.
-- **Ports in use:** ClickHouse uses 8123, the collector 4317 and 4318, all on 127.0.0.1. Change them in `docker-compose.yml` and set `AGENT_OTEL_CLICKHOUSE_URL` / `OTEL_EXPORTER_OTLP_ENDPOINT` to match.
+- **Ports in use:** ClickHouse uses 8123 and the relay 4318, both on 127.0.0.1. Change them in `docker-compose.yml` and set `AGENT_OTEL_CLICKHOUSE_URL`, `AGENT_OTEL_RELAY_URL` and `OTEL_ENDPOINT_OVERRIDE` to match.
+- **Policy page says the relay is offline:** `docker compose ps relay`, then `docker compose logs relay`.
 
 ## License
 

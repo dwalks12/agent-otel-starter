@@ -2,6 +2,7 @@
 # One command: start ClickHouse + the OTel Collector, then open the AgentScope app.
 #   ./run.sh          start everything and open the app
 #   ./run.sh --seed   same, plus fake sessions so the app has data straight away
+#   ./run.sh --fresh  same, but first wipe all stored sessions so only new, real ones show
 #   ./run.sh down     stop the containers (data is kept; add -v to docker compose down to wipe it)
 set -eu
 cd "$(dirname "$0")"
@@ -10,6 +11,14 @@ say() { printf '\033[1;35m▸\033[0m %s\n' "$*"; }
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing $1. $2" >&2; exit 1; }; }
 
 if [ "${1:-}" = "down" ]; then docker compose down; exit 0; fi
+seed=0; fresh=0
+for arg in "$@"; do
+  case "$arg" in
+    --seed) seed=1 ;;
+    --fresh) fresh=1 ;;
+    *) echo "usage: ./run.sh [--seed] [--fresh] | down" >&2; exit 1 ;;
+  esac
+done
 
 need docker "Install Docker Desktop: https://www.docker.com/products/docker-desktop/"
 need swift  "Install Xcode or the Swift toolchain: xcode-select --install"
@@ -28,7 +37,12 @@ fi
 say "Starting ClickHouse and the OpenTelemetry Collector…"
 docker compose up -d --wait
 
-if [ "${1:-}" = "--seed" ]; then
+if [ "$fresh" = 1 ]; then
+  say "Wiping stored sessions and commits…"
+  scripts/reset-data.sh
+fi
+
+if [ "$seed" = 1 ]; then
   say "Seeding demo sessions…"
   scripts/seed.sh
 fi
@@ -36,7 +50,8 @@ fi
 cat <<EOF
 
   ClickHouse   http://localhost:8123  (scripts/query.sh sql/cost-per-session.sql)
-  OTLP         localhost:4317 (gRPC) · localhost:4318 (HTTP)
+  OTLP         localhost:4318 (HTTP/JSON, through the policy relay)
+  Policy       http://localhost:4318/policy  (or the Policy page in the app)
 
   Next, in another terminal:
     scripts/install-hooks.sh /path/to/a/repo   stamp commits with their session

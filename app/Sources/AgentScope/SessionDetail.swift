@@ -334,10 +334,20 @@ struct TranscriptRow: View {
             .background(Theme.stroke.opacity(0.45), in: Capsule())
     }
 
+    private var redactedLength: Int? {
+        switch item.kind {
+        case .prompt(_, let length), .response(_, _, let length): length
+        default: nil
+        }
+    }
+
     private func bubble(title: String, tint: Color, text: String?, missing: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.system(size: 11, weight: .bold)).foregroundStyle(tint)
-            if let text {
+            if text == redactedValue {
+                Label("Redacted by policy at the relay\(redactedLength.map { " · \($0) characters" } ?? "")", systemImage: "lock.fill")
+                    .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.warm)
+            } else if let text {
                 Text(markdown(text)).font(.system(size: 14)).lineSpacing(3).foregroundStyle(Theme.text).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
@@ -357,7 +367,11 @@ struct TranscriptRow: View {
                 HStack(spacing: 10) {
                     ToolIcon(name: tool.name)
                     Text(tool.name).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text)
-                    Text(tool.summary).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.body)
+                    if tool.inputRedacted {
+                        Image(systemName: "lock.fill").font(.system(size: 10)).foregroundStyle(Theme.warm)
+                    }
+                    Text(tool.summary).font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(tool.inputRedacted ? Theme.warm : Theme.body)
                         .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 8)
                     status(tool)

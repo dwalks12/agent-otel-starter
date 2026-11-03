@@ -1,5 +1,6 @@
 #!/bin/sh
-# Launch Claude Code with OpenTelemetry export pointed at the local collector.
+# Launch Claude Code with OpenTelemetry export pointed at the local policy relay,
+# which applies your AgentScope policy and forwards to the collector.
 # Usage: bin/claude-otel [any claude arguments]
 #
 # Why --settings and not just environment variables: an "env" block in your user
@@ -10,8 +11,10 @@
 #
 # Content capture: prompts, Claude's replies and tool inputs are recorded so AgentScope
 # can show the full transcript. It all stays in your local ClickHouse. To record usage
-# only (tokens, cost, tool names), run with AGENT_OTEL_CONTENT=0.
-endpoint="${OTEL_ENDPOINT_OVERRIDE:-http://localhost:4317}"
+# only (tokens, cost, tool names), run with AGENT_OTEL_CONTENT=0. To keep recording but
+# hide prompts, replies, tool inputs or your identity, use the Policy page in AgentScope:
+# the relay redacts them before anything is stored.
+endpoint="${OTEL_ENDPOINT_OVERRIDE:-http://localhost:4318}"
 if [ "${AGENT_OTEL_CONTENT:-1}" = "0" ]; then content=0; else content=1; fi
 
 settings=$(cat <<EOF
@@ -25,7 +28,7 @@ settings=$(cat <<EOF
   "OTEL_LOGS_EXPORTER": "otlp",
   "OTEL_METRICS_EXPORTER": "otlp",
   "OTEL_TRACES_EXPORTER": "none",
-  "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+  "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
   "OTEL_EXPORTER_OTLP_ENDPOINT": "$endpoint",
   "OTEL_EXPORTER_OTLP_HEADERS": "",
   "OTEL_LOGS_EXPORT_INTERVAL": "5000",

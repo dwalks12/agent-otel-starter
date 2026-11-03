@@ -1,5 +1,5 @@
-# ClickHouse stores the telemetry; the OpenTelemetry Collector receives it from
-# Claude Code over OTLP and writes it into ClickHouse.
+# Claude Code -> relay (applies the policy) -> OpenTelemetry Collector -> ClickHouse.
+# The relay is the only port telemetry can enter through; the collector is internal.
 name: agent-otel-starter
 
 services:
@@ -26,13 +26,32 @@ services:
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       - ./otel/config.yaml:/etc/otel/config.yaml:ro
-    ports:
-      - "127.0.0.1:4317:4317"   # OTLP gRPC (Claude Code)
-      - "127.0.0.1:4318:4318"   # OTLP HTTP (seed script)
+    # No host ports: everything comes in through the relay.
     depends_on:
       clickhouse:
         condition: service_healthy
     restart: unless-stopped
 
+  relay:
+    image: python:3.13.5-alpine
+    command: ["python", "-u", "/relay/relay.py"]
+    environment:
+      UPSTREAM: http://otel-collector:4318
+      POLICY_FILE: /data/policy.json
+    volumes:
+      - ./relay:/relay:ro
+      - relay-data:/data          # the policy survives restarts
+    ports:
+      - "127.0.0.1:4318:4318"     # OTLP HTTP/JSON in (Claude Code, seed script) + /policy for the app
+    depends_on:
+      - otel-collector
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4318/health')"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
 volumes:
   clickhouse-data:
+  relay-data:

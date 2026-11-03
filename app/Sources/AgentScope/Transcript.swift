@@ -35,6 +35,7 @@ struct TranscriptItem: Identifiable {
         var name: String
         var summary: String
         var input: String?        // raw JSON, when captured
+        var inputRedacted = false // the relay's policy removed it
         var decision: String?     // accept / reject
         var decisionSource: String?
         var success: Bool?        // nil: no result yet, or rejected
@@ -84,8 +85,8 @@ enum Transcript {
                 let decision = e["tool_use_id"].flatMap { decisions[$0] }
                 let input = e["tool_input"] ?? e["tool_parameters"] ?? decision?["tool_parameters"]
                 let name = e["tool_name"] ?? "Tool"
-                return .init(id: id, date: e.date, kind: .tool(.init(
-                    name: name, summary: summarize(tool: name, input: input), input: input,
+                return .init(id: id, date: e.date, kind: .tool(tool(
+                    name: name, input: input,
                     decision: decision?["decision"], decisionSource: decision?["source"],
                     success: e["success"].map { $0 == "true" }, durationMs: e.number("duration_ms"),
                     resultBytes: e.number("tool_result_size_bytes"))))
@@ -94,14 +95,22 @@ enum Transcript {
                 if let toolID = e["tool_use_id"], resultIDs.contains(toolID) { return nil }
                 let name = e["tool_name"] ?? "Tool"
                 let input = e["tool_parameters"]
-                return .init(id: id, date: e.date, kind: .tool(.init(
-                    name: name, summary: summarize(tool: name, input: input), input: input,
+                return .init(id: id, date: e.date, kind: .tool(tool(
+                    name: name, input: input,
                     decision: e["decision"], decisionSource: e["source"], success: nil, durationMs: nil, resultBytes: nil)))
             default:
                 let detail = e["hook_event"] ?? e["server_name"] ?? e["plugin.name"] ?? ""
                 return .init(id: id, date: e.date, kind: .system(name: e.name.replacingOccurrences(of: "_", with: " "), detail: detail))
             }
         }
+    }
+
+    private static func tool(name: String, input: String?, decision: String?, decisionSource: String?,
+                             success: Bool?, durationMs: Double?, resultBytes: Double?) -> TranscriptItem.Tool {
+        let redacted = input == redactedValue
+        return .init(name: name, summary: redacted ? "input redacted by policy" : summarize(tool: name, input: input),
+                     input: redacted ? nil : input, inputRedacted: redacted,
+                     decision: decision, decisionSource: decisionSource, success: success, durationMs: durationMs, resultBytes: resultBytes)
     }
 
     /// A one-line description of a tool call: the command, the file, the pattern.
