@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SessionDetail: View {
@@ -5,8 +6,13 @@ struct SessionDetail: View {
     var models: [ModelRow]
     var commits: [CommitRow]
     var transcript: [TranscriptItem]
+    var backstage: Backstage
+    var insights: SessionInsights?
+    var insightsRunning: Bool
+    var insightsError: String?
+    var generateInsights: () -> Void
 
-    enum Tab: Hashable { case transcript, tools, models, commits }
+    enum Tab: Hashable { case transcript, insights, backstage, tools, models, commits }
 
     @State private var tab: Tab = .transcript
     @State private var showRequests = true
@@ -16,6 +22,11 @@ struct SessionDetail: View {
     private var toolCalls: Int { toolStats.reduce(0) { $0 + $1.calls } }
     private var toolFailures: Int { toolStats.reduce(0) { $0 + $1.failures } }
     private var prompts: Int { transcript.filter { if case .prompt = $0.kind { true } else { false } }.count }
+    private var flagged: [(item: TranscriptItem, tool: TranscriptItem.Tool)] {
+        transcript.compactMap { item in
+            if case .tool(let tool) = item.kind, !tool.flags.isEmpty { (item, tool) } else { nil }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -27,11 +38,16 @@ struct SessionDetail: View {
                     .font(.system(size: 12)).foregroundStyle(Theme.warm)
             }
             Panel {
-                PillTabs(options: [(.transcript, "Transcript"), (.tools, "Tools · \(toolCalls)"),
+                PillTabs(options: [(.transcript, "Transcript"),
+                                   (.insights, insights.map { "Insights · \($0.insights.count)" } ?? "Insights"),
+                                   (.backstage, flagged.isEmpty ? "Behind the scenes" : "Behind the scenes · \(flagged.count) flagged"),
+                                   (.tools, "Tools · \(toolCalls)"),
                                    (.models, "Models · \(models.count)"), (.commits, "Commits · \(commits.count)")],
                          selection: $tab)
                 switch tab {
                 case .transcript: transcriptView
+                case .insights: insightsView
+                case .backstage: backstageView
                 case .tools: toolsView
                 case .models: modelsView
                 case .commits: commitsView
@@ -72,6 +88,7 @@ struct SessionDetail: View {
                  note: toolFailures > 0 ? "\(toolFailures) failed" : nil, noteTint: Theme.hot)
             Fact(icon: "arrow.triangle.branch", tint: Theme.warm, label: "Commits", value: "\(commits.count)", note: nil)
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: Transcript
@@ -102,9 +119,157 @@ struct SessionDetail: View {
         }
     }
 
-    private func offset(_ date: Date, from start: Date) -> String {
-        let s = max(0, Int(date.timeIntervalSince(start)))
-        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
+    private func offset(_ date: Date, from start: Date) -> String { Format.offset(date, from: start) }
+
+    // MARK: Insights
+
+    private var insightsView: some View {
+        let start = transcript.first?.date ?? session.startedAt
+        let newEvents = insights.map { transcript.count - $0.events } ?? 0
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let insights {
+                        Text("Written by \(insights.model) \(Format.relative(insights.date)) for \(Format.usd(insights.usd))"
+                             + (newEvents > 0 ? " · \(plural(newEvents, "event")) since" : ""))
+                            .font(.system(size: 13)).foregroundStyle(Theme.body)
+                    } else {
+                        Text("Have Claude read this session and suggest one to three changes: to the setup, the prompts, the model, or a skill to install.")
+                            .font(.system(size: 13)).foregroundStyle(Theme.body)
+                    }
+                    Text("Runs claude -p (\(Insights.model)) on your Claude Code login. It sends this transcript to the model and a few search words to skills.sh, and usually costs a few cents.")
+                        .font(.system(size: 12)).foregroundStyle(Theme.muted)
+                }
+                Spacer(minLength: 12)
+                Button(action: generateInsights) {
+                    HStack(spacing: 7) {
+                        if insightsRunning { ProgressView().controlSize(.small) } else { Image(systemName: "sparkles") }
+                        Text(insightsRunning ? "Reading the session…" : insights == nil ? "Generate insights" : "Regenerate")
+                    }
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.text)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Theme.accentDeep.opacity(insightsRunning ? 0.4 : 0.85), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(insightsRunning || transcript.isEmpty)
+            }
+            if let insightsError {
+                Label(insightsError, systemImage: "exclamationmark.circle")
+                    .font(.system(size: 12)).foregroundStyle(Theme.hot).textSelection(.enabled)
+            }
+            if let insights {
+                if insights.insights.isEmpty {
+                    Label("The model returned no insights this time. Try Regenerate.", systemImage: "exclamationmark.circle")
+                        .font(.system(size: 13)).foregroundStyle(Theme.muted)
+                }
+                ForEach(insights.insights) { insight in
+                    InsightCard(insight: insight, evidence: insight.evidence.compactMap { id in transcript.first { $0.id == id } }, start: start)
+                }
+            }
+        }
+    }
+
+    // MARK: Behind the scenes
+
+    private var backstageView: some View {
+        let b = backstage
+        let start = transcript.first?.date ?? session.startedAt
+        return VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                Fact(icon: "hand.raised.slash.fill", tint: Theme.warm, label: "Auto-approved",
+                     value: "\(b.allowed - b.askedYou) of \(b.allowed)",
+                     note: "ran without asking you" + (b.permissionModes.contains("auto") ? " · auto mode" : ""))
+                Fact(icon: "arrow.up.arrow.down", tint: Theme.accent, label: "Side calls", value: "\(b.sideCallCount)",
+                     note: b.sideCallCount == 0 ? "only the conversation" : "\(Format.usd(b.sideCallUSD)) on side jobs")
+                Fact(icon: "puzzlepiece.extension.fill", tint: Theme.good, label: "Hook runs", value: "\(b.hookRuns)",
+                     note: "\(plural(b.plugins.count, "plugin")) · \(plural(b.mcpServers.count, "MCP server"))")
+                Fact(icon: "flag.fill", tint: Theme.hot, label: "Flagged", value: "\(flagged.count)",
+                     note: b.blocked > 0 ? "\(b.blocked) blocked" : nil, noteTint: Theme.warm)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+
+            if !b.sideCalls.isEmpty || b.hookRuns > 0 || !b.plugins.isEmpty || !b.mcpServers.isEmpty || !b.managedSources.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    sectionTitle("What ran that you didn’t see")
+                    ForEach(b.sideCalls, id: \.source) { call in
+                        backstageLine(icon: "arrow.up.arrow.down", tint: Theme.accent,
+                                      text: "\(plural(call.calls, "model call")) for \(call.source.replacingOccurrences(of: "_", with: " "))",
+                                      trailing: Format.usd(call.usd))
+                    }
+                    if b.hookRuns > 0 {
+                        backstageLine(icon: "bolt.fill", tint: Theme.good,
+                                      text: "\(b.hookRuns) hook runs from your settings and plugins" +
+                                            (b.hookContextChars > 0 ? ", adding \(b.hookContextChars) characters to Claude’s context" : ""),
+                                      trailing: nil)
+                    }
+                    if !b.plugins.isEmpty {
+                        backstageLine(icon: "puzzlepiece.extension.fill", tint: Theme.good,
+                                      text: "Plugins: " + b.plugins.joined(separator: ", "), trailing: nil)
+                    }
+                    if !b.mcpServers.isEmpty {
+                        backstageLine(icon: "server.rack", tint: Theme.good,
+                                      text: "MCP servers connected: " + b.mcpServers.joined(separator: ", "), trailing: nil)
+                    }
+                    if !b.managedSources.isEmpty {
+                        backstageLine(icon: "building.2.fill", tint: Theme.body,
+                                      text: "Managed settings in effect: " + b.managedSources.joined(separator: ", "), trailing: nil)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                sectionTitle("Flagged tool calls")
+                if flagged.isEmpty {
+                    Text("Nothing matched: " + Flag.allCases.map { $0.title.lowercased() }.joined(separator: ", ") + ".")
+                        .font(.system(size: 13)).foregroundStyle(Theme.muted)
+                }
+                ForEach(Flag.allCases) { flag in
+                    let calls = flagged.filter { $0.tool.flags.contains(flag) }
+                    if !calls.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                Image(systemName: flag.icon).font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.hot)
+                                Text(flag.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.text)
+                                Text(flag.why).font(.system(size: 12)).foregroundStyle(Theme.body).lineLimit(1)
+                            }
+                            ForEach(calls, id: \.item.id) { call in
+                                HStack(spacing: 10) {
+                                    Text(offset(call.item.date, from: start))
+                                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.muted)
+                                        .frame(width: 44, alignment: .trailing)
+                                    ToolIcon(name: call.tool.name)
+                                    Text(call.tool.summary).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.body)
+                                        .lineLimit(1).truncationMode(.tail).textSelection(.enabled)
+                                    Spacer(minLength: 8)
+                                    Text(call.tool.decision == "reject" ? "blocked · \(call.tool.decisionSource ?? "?")" : "ran")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(call.tool.decision == "reject" ? Theme.good : Theme.warm)
+                                }
+                            }
+                        }
+                        .padding(12)
+                        .background(Theme.hot.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.hot.opacity(0.22)))
+                    }
+                }
+            }
+        }
+    }
+
+    private func plural(_ n: Int, _ noun: String) -> String { "\(n) \(noun)\(n == 1 ? "" : "s")" }
+
+    private func sectionTitle(_ text: String) -> some View {
+        Text(text.uppercased()).font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.2)
+            .foregroundStyle(Theme.muted)
+    }
+
+    private func backstageLine(icon: String, tint: Color, text: String, trailing: String?) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).font(.system(size: 11, weight: .bold)).foregroundStyle(tint).frame(width: 18)
+            Text(text).font(.system(size: 13)).foregroundStyle(Theme.body).lineLimit(2)
+            Spacer(minLength: 8)
+            if let trailing { Text(trailing).font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.warm) }
+        }
     }
 
     // MARK: Tools
@@ -192,6 +357,121 @@ struct SessionDetail: View {
     }
 }
 
+/// One insight: the kind of change, what to do, what happened, what to change, and a prompt that makes the change.
+struct InsightCard: View {
+    var insight: Insight
+    var evidence: [TranscriptItem]
+    var start: Date
+    @State private var copied: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(insight.action.title, systemImage: insight.action.icon)
+                .font(.system(size: 11, weight: .semibold))
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .foregroundStyle(Theme.accent).background(Theme.accent.opacity(0.14), in: Capsule())
+            Text(insight.title).font(.system(size: 16, weight: .semibold, design: .rounded)).foregroundStyle(Theme.text)
+                .textSelection(.enabled)
+            section("What happened", insight.finding)
+            if !evidence.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(evidence) { item in
+                        HStack(spacing: 10) {
+                            Text(Format.offset(item.date, from: start))
+                                .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.muted)
+                                .frame(width: 44, alignment: .trailing)
+                            Text(item.oneLine).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.body)
+                                .lineLimit(1).truncationMode(.tail)
+                        }
+                    }
+                }
+            }
+            section("What to change", insight.recommendation)
+            if !insight.remediationPrompt.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        label(insight.promptLabel)
+                        Spacer()
+                        copyButton(insight.remediationPrompt)
+                    }
+                    Text(insight.remediationPrompt)
+                        .font(.system(size: 12, design: .monospaced)).lineSpacing(2).foregroundStyle(Theme.body).textSelection(.enabled)
+                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.background, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    Text(insight.promptNote)
+                        .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                }
+            }
+            if let skill = insight.skill { skillView(skill) }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.background.opacity(0.55), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.accent.opacity(0.25)))
+    }
+
+    private func skillView(_ skill: Skill) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            label("A skill for this")
+            HStack(spacing: 8) {
+                Image(systemName: "shippingbox.fill").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.good)
+                Text(skill.name).font(.system(size: 14, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text)
+                Text("\(skill.source) · \(Format.tokens(Double(skill.installs))) installs")
+                    .font(.system(size: 12)).foregroundStyle(Theme.muted)
+                Spacer()
+                if let url = skill.url {
+                    Button { NSWorkspace.shared.open(url) } label: {
+                        Label("skills.sh", systemImage: "arrow.up.right")
+                            .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.accent)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Text(skill.why.isEmpty ? skill.description : skill.why)
+                .font(.system(size: 13)).lineSpacing(3).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Text(skill.installCommand).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.body)
+                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                Spacer(minLength: 8)
+                copyButton(skill.installCommand)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .background(Theme.background, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            Text("Someone else’s instructions for your agent, found by searching skills.sh. Read the skill before you install it.")
+                .font(.system(size: 11)).foregroundStyle(Theme.muted)
+        }
+        .padding(12)
+        .background(Theme.good.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.good.opacity(0.22)))
+    }
+
+    private func copyButton(_ text: String) -> some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            copied = text
+            Task { try? await Task.sleep(for: .seconds(2)); if copied == text { copied = nil } }
+        } label: {
+            Label(copied == text ? "Copied" : "Copy", systemImage: copied == text ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 11, weight: .semibold)).foregroundStyle(copied == text ? Theme.good : Theme.accent)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func label(_ text: String) -> some View {
+        Text(text.uppercased()).font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.2)
+            .foregroundStyle(Theme.muted)
+    }
+
+    private func section(_ title: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            label(title)
+            Text(text).font(.system(size: 13)).lineSpacing(3).foregroundStyle(Theme.text).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 struct Fact: View {
     var icon: String
     var tint: Color
@@ -211,7 +491,7 @@ struct Fact: View {
             Text(note ?? " ").font(.system(size: 11)).foregroundStyle(noteTint)
         }
         .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(LinearGradient(colors: [tint.opacity(0.09), Theme.panel], startPoint: .topLeading, endPoint: .bottomTrailing),
                     in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.cardBorder))
@@ -256,8 +536,11 @@ struct TimelineRow: View {
         case .prompt: ("person.fill", Theme.accent, 26)
         case .response: ("sparkles", Theme.good, 26)
         case .request: ("arrow.up.arrow.down", Theme.muted, 18)
-        case .tool(let tool): (tool.success == false ? "xmark" : tool.decision == "reject" ? "hand.raised.fill" : "wrench.fill",
-                               tool.success == false ? Theme.hot : tool.decision == "reject" ? Theme.warm : Theme.good, 20)
+        case .tool(let tool):
+            tool.success == false ? ("xmark", Theme.hot, 20)
+                : tool.decision == "reject" ? ("hand.raised.fill", Theme.warm, 20)
+                : !tool.flags.isEmpty ? ("flag.fill", Theme.hot, 20)
+                : ("wrench.fill", Theme.good, 20)
         case .error: ("exclamationmark", Theme.hot, 22)
         case .system: ("circle.fill", Theme.stroke, 10)
         }
@@ -334,20 +617,10 @@ struct TranscriptRow: View {
             .background(Theme.stroke.opacity(0.45), in: Capsule())
     }
 
-    private var redactedLength: Int? {
-        switch item.kind {
-        case .prompt(_, let length), .response(_, _, let length): length
-        default: nil
-        }
-    }
-
     private func bubble(title: String, tint: Color, text: String?, missing: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.system(size: 11, weight: .bold)).foregroundStyle(tint)
-            if text == redactedValue {
-                Label("Redacted by policy at the relay\(redactedLength.map { " · \($0) characters" } ?? "")", systemImage: "lock.fill")
-                    .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.warm)
-            } else if let text {
+            if let text {
                 Text(markdown(text)).font(.system(size: 14)).lineSpacing(3).foregroundStyle(Theme.text).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
@@ -367,13 +640,16 @@ struct TranscriptRow: View {
                 HStack(spacing: 10) {
                     ToolIcon(name: tool.name)
                     Text(tool.name).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text)
-                    if tool.inputRedacted {
-                        Image(systemName: "lock.fill").font(.system(size: 10)).foregroundStyle(Theme.warm)
-                    }
                     Text(tool.summary).font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(tool.inputRedacted ? Theme.warm : Theme.body)
+                        .foregroundStyle(Theme.body)
                         .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 8)
+                    ForEach(tool.flags) { flag in
+                        Label(flag.title, systemImage: flag.icon)
+                            .font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .foregroundStyle(Theme.hot).background(Theme.hot.opacity(0.14), in: Capsule())
+                    }
                     status(tool)
                     if tool.input != nil {
                         Image(systemName: "chevron.right")

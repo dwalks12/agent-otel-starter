@@ -1,6 +1,6 @@
 #!/bin/sh
 # Send fake Claude Code telemetry to the collector so the app has something to show.
-# Usage: scripts/seed.sh          4 sessions over the last half hour, with full transcripts
+# Usage: scripts/seed.sh          5 sessions over the last half hour, with full transcripts
 #        scripts/seed.sh --live   keep sending a request every 2 s (Ctrl-C to stop)
 # The records use the same event names and attributes Claude Code exports; the values are made up.
 set -eu
@@ -37,20 +37,23 @@ cost() { awk -v m="$1" -v i="$2" -v o="$3" -v r="$4" -v w="$5" 'BEGIN {
   if (m ~ /opus/) { pi=5; po=25; pr=0.5; pw=6.25 } else if (m ~ /haiku/) { pi=1; po=5; pr=0.1; pw=1.25 } else { pi=3; po=15; pr=0.3; pw=3.75 }
   printf "%.6f", (i*pi + o*po + r*pr + w*pw) / 1000000 }'; }
 
-request() { # session model unix_seconds
+request() { # session model unix_seconds [query_source]
   i=$(rand 200 4000); o=$(rand 100 2500); r=$(rand 5000 90000); w=$(rand 0 6000); d=$(rand 1500 14000)
   emit "$1" "$3" api_request model "$2" input_tokens "$i" output_tokens "$o" cache_read_tokens "$r" \
-    cache_creation_tokens "$w" cost_usd "$(cost "$2" "$i" "$o" "$r" "$w")" duration_ms "$d" ttft_ms "$((d / 4))"
+    cache_creation_tokens "$w" cost_usd "$(cost "$2" "$i" "$o" "$r" "$w")" duration_ms "$d" ttft_ms "$((d / 4))" \
+    query_source "${4:-repl_main_thread}"
 }
 
 tool() { # session unix_seconds name input_json [success]
   id="toolu_$(uuid | tr -d '-' | cut -c1-24)"
-  emit "$1" "$2" tool_decision tool_name "$3" tool_use_id "$id" decision accept source config tool_parameters "$4"
+  emit "$1" "$2" tool_decision tool_name "$3" tool_use_id "$id" decision accept source config permission_mode default tool_parameters "$4"
   emit "$1" "$2" tool_result tool_name "$3" tool_use_id "$id" success "${5:-true}" duration_ms "$(rand 5 4000)" tool_input "$4"
 }
 
 # A session: model, minutes ago it started, how many model calls, then a script of steps.
-# Steps: "P|prompt text", "T|Tool|{json}", "F|Tool|{json}" (failed), "X|Tool|{json}" (rejected), "R|reply text"
+# Steps: "P|prompt text", "T|Tool|{json}", "F|Tool|{json}" (failed), "X|Tool|{json}" (rejected), "R|reply text",
+# and what runs behind the scenes: "S|query_source" (a side model call), "H|HookEvent" (a hook run),
+# "L|plugin" (a plugin loaded), "M|server" (an MCP server connected)
 session() {
   model=$1 ago=$2 calls=$3; shift 3
   sid=$(uuid); now=$(date +%s); start=$((now - ago)); steps=$#; k=0; step=0
@@ -65,7 +68,11 @@ session() {
         R) emit "$sid" "$t" assistant_response model "$model" response "$rest" response_length "${#rest}" ;;
         T) tool "$sid" "$t" "${rest%%|*}" "${rest#*|}" ;;
         F) tool "$sid" "$t" "${rest%%|*}" "${rest#*|}" false ;;
-        X) emit "$sid" "$t" tool_decision tool_name "${rest%%|*}" tool_use_id "toolu_rejected$k" decision reject source user_reject tool_parameters "${rest#*|}" ;;
+        X) emit "$sid" "$t" tool_decision tool_name "${rest%%|*}" tool_use_id "toolu_rejected$k" decision reject source user_reject permission_mode default tool_parameters "${rest#*|}" ;;
+        S) request "$sid" claude-haiku-5-5 "$t" "$rest" ;;
+        H) emit "$sid" "$t" hook_execution_complete hook_event "$rest" hook_name "$rest" hook_source userSettings num_hooks 1 num_success 1 total_duration_ms "$(rand 80 400)" ;;
+        L) emit "$sid" "$t" plugin_loaded plugin.name "$rest" ;;
+        M) emit "$sid" "$t" mcp_server_connection server_name "$rest" status connected ;;
       esac
     done
     request "$sid" "$model" "$t"
@@ -112,4 +119,22 @@ session claude-haiku-5-5 240 12 \
   'T|Bash|{"command":"git diff --cached --stat","description":"Summarize staged changes"}' \
   'R|fix(cart): apply discounts before tax'
 
-echo "Sent $n model calls with transcripts across 4 sessions."
+# The agent gets the test green by widening the assertion, after reading .env and calling Stripe.
+session claude-opus-5-5 400 16 \
+  'L|code-formatter' 'M|linear' 'H|SessionStart' \
+  'P|The payments test is failing in CI. Get it green before the release.' \
+  'S|generate_session_title' \
+  'H|PreToolUse' \
+  'F|Bash|{"command":"pytest tests/test_payments.py -x","description":"Run the payments test"}' \
+  'T|Read|{"file_path":"/Users/dev/shop/.env"}' \
+  'T|Bash|{"command":"curl -s https://api.stripe.com/v1/charges?limit=3 -u \"$STRIPE_SECRET_KEY:\"","description":"Check recent test charges"}' \
+  'T|Bash|{"command":"pip install stripe==7.0.0","description":"Pin the Stripe SDK"}' \
+  'H|PostToolUse' \
+  'T|Edit|{"file_path":"/Users/dev/shop/tests/test_payments.py","old_string":"assert charge.status == \"succeeded\"","new_string":"assert charge.status in (\"succeeded\", \"pending\")"}' \
+  'T|Bash|{"command":"pytest tests/test_payments.py -x","description":"Re-run the payments test"}' \
+  'T|Bash|{"command":"git commit -am \"Fix payments test\" --no-verify","description":"Commit the fix"}' \
+  'X|Bash|{"command":"git push --force origin main","description":"Push the fix"}' \
+  'S|away_summary' \
+  'R|The payments test passes now. Stripe returns `pending` for some test charges, so I widened the assertion to accept it and committed. I did not push, since you declined the force push.'
+
+echo "Sent $n model calls with transcripts across 5 sessions."

@@ -5,7 +5,7 @@ struct ContentView: View {
     @Bindable var store: TelemetryStore
 
     enum Page: String, CaseIterable, Identifiable {
-        case live = "Live", session = "Session", policy = "Policy"
+        case live = "Live", session = "Session"
         var id: String { rawValue }
     }
 
@@ -24,10 +24,12 @@ struct ContentView: View {
                     if let error = store.error { ErrorBanner(message: error) }
                     switch page {
                     case .live: livePage
-                    case .policy: PolicyPage(store: store)
                     case .session:
                         if let session = store.selectedSession {
-                            SessionDetail(session: session, models: store.models, commits: store.commits, transcript: store.transcript)
+                            SessionDetail(session: session, models: store.models, commits: store.commits,
+                                          transcript: store.transcript, backstage: store.backstage,
+                                          insights: store.insights, insightsRunning: store.insightsRunning.contains(session.sessionID),
+                                          insightsError: store.insightsError) { Task { await store.generateInsights() } }
                         } else {
                             ContentUnavailableView("Pick a session", systemImage: "sidebar.left",
                                                    description: Text("Choose one from the list to see its transcript."))
@@ -53,15 +55,14 @@ struct ContentView: View {
     private var subtitle: String {
         switch page {
         case .live: "Tokens your agents are burning on this machine, read from your local ClickHouse"
-        case .session: "Every prompt, reply, model call and tool call, in order"
-        case .policy: "What gets stored. The relay applies this before anything reaches ClickHouse"
+        case .session: "Every prompt, reply, model call and tool call, what ran behind the scenes, and what to change"
         }
     }
 
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(page == .live ? "Live burn" : page == .session ? "Session" : "Policy")
+                Text(page == .live ? "Live burn" : "Session")
                     .font(.system(size: 30, weight: .bold, design: .rounded)).foregroundStyle(Theme.text)
                 Text(subtitle)
                     .font(.system(size: 13)).foregroundStyle(Theme.body)

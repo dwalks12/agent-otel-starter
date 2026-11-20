@@ -17,6 +17,14 @@ struct ClickHouseClient: Sendable {
     }
 
     func rows<Row: Decodable>(_ sql: String, as: Row.Type = Row.self) async throws -> [Row] {
+        let data = try await execute(sql + "\nFORMAT JSONEachRow")
+        let decoder = JSONDecoder()
+        return try data.split(separator: UInt8(ascii: "\n")).map { try decoder.decode(Row.self, from: Data($0)) }
+    }
+
+    /// Runs a statement as it is (DDL, or an INSERT with its rows) and returns the response body.
+    @discardableResult
+    func execute(_ sql: String) async throws -> Data {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         components.queryItems = [
             // Numbers as JSON numbers, not quoted strings; NULL stays null.
@@ -25,7 +33,7 @@ struct ClickHouseClient: Sendable {
         ]
         var request = URLRequest(url: components.url!, timeoutInterval: 5)
         request.httpMethod = "POST"
-        request.httpBody = Data((sql + "\nFORMAT JSONEachRow").utf8)
+        request.httpBody = Data(sql.utf8)
 
         let data: Data
         let response: URLResponse
@@ -38,7 +46,6 @@ struct ClickHouseClient: Sendable {
             let message = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             throw Failure.server(message.isEmpty ? "ClickHouse returned HTTP \(http.statusCode)" : message)
         }
-        let decoder = JSONDecoder()
-        return try data.split(separator: UInt8(ascii: "\n")).map { try decoder.decode(Row.self, from: Data($0)) }
+        return data
     }
 }

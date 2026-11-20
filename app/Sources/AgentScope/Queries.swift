@@ -96,6 +96,40 @@ enum Queries {
         """
     }
 
+    /// The app's own table: the latest analysis of each session (a newer row replaces an older one).
+    static let createInsights = """
+        CREATE TABLE IF NOT EXISTS otel.session_insights
+        (
+            session_id   String,
+            generated_at DateTime64(3) DEFAULT now64(3),
+            model        String,
+            usd          Nullable(Float64),
+            events       UInt32,
+            insights     String
+        )
+        ENGINE = ReplacingMergeTree(generated_at)
+        ORDER BY session_id
+        """
+
+    static func insights(session: String) -> String {
+        """
+        SELECT toUnixTimestamp(generated_at) AS generated_at, model, usd, events, insights
+        FROM otel.session_insights FINAL
+        WHERE session_id = \(quoted(session))
+        """
+    }
+
+    /// `insights` is the list as JSON. generated_at is left to its default, so the newest write wins.
+    static func saveInsights(session: String, _ result: SessionInsights) throws -> String {
+        struct Row: Encodable {
+            var session_id: String, model: String, usd: Double?, events: Int, insights: String
+        }
+        let row = Row(session_id: session, model: result.model, usd: result.usd, events: result.events,
+                      insights: String(decoding: try JSONEncoder().encode(result.insights), as: UTF8.self))
+        return "INSERT INTO otel.session_insights (session_id, model, usd, events, insights) FORMAT JSONEachRow\n"
+            + String(decoding: try JSONEncoder().encode(row), as: UTF8.self)
+    }
+
     /// Session ids come from our own query results, but quote them properly anyway.
     static func quoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'") + "'"

@@ -35,10 +35,11 @@ struct TranscriptItem: Identifiable {
         var name: String
         var summary: String
         var input: String?        // raw JSON, when captured
-        var inputRedacted = false // the relay's policy removed it
+        var flags: [Flag] = []    // worth a second look; see Backstage.swift
         var decision: String?     // accept / reject
         var decisionSource: String?
         var success: Bool?        // nil: no result yet, or rejected
+        var error: String?        // what a failed call reported, e.g. "Shell command failed"
         var durationMs: Double?
         var resultBytes: Double?
     }
@@ -48,6 +49,18 @@ struct TranscriptItem: Identifiable {
     var kind: Kind
 
     var isSystem: Bool { if case .system = kind { true } else { false } }
+
+    /// The item on one line, for lists that point back at the transcript.
+    var oneLine: String {
+        switch kind {
+        case .prompt(let text, _): "You: " + (text ?? "prompt not captured")
+        case .response(let text, _, _): "Claude: " + (text ?? "reply not captured")
+        case .request(let model, let usage, _, _): "Model call · \(Format.modelName(model)) · \(Format.usd(usage.usd))"
+        case .tool(let tool): "\(tool.name) \(tool.summary)" + (tool.success == false ? " · failed" : tool.decision == "reject" ? " · rejected" : "")
+        case .error(let message, _, _): "API error · \(message)"
+        case .system(let name, let detail): "\(name) \(detail)"
+        }
+    }
 }
 
 enum Transcript {
@@ -83,21 +96,21 @@ enum Transcript {
                                                                 status: e["status_code"]))
             case "tool_result":
                 let decision = e["tool_use_id"].flatMap { decisions[$0] }
-                let input = e["tool_input"] ?? e["tool_parameters"] ?? decision?["tool_parameters"]
+                let parameters = e["tool_parameters"] ?? decision?["tool_parameters"]
                 let name = e["tool_name"] ?? "Tool"
                 return .init(id: id, date: e.date, kind: .tool(tool(
-                    name: name, input: input,
+                    name: name, input: e["tool_input"] ?? parameters, parameters: parameters,
                     decision: decision?["decision"], decisionSource: decision?["source"],
-                    success: e["success"].map { $0 == "true" }, durationMs: e.number("duration_ms"),
-                    resultBytes: e.number("tool_result_size_bytes"))))
+                    success: e["success"].map { $0 == "true" }, error: e["error"],
+                    durationMs: e.number("duration_ms"), resultBytes: e.number("tool_result_size_bytes"))))
             case "tool_decision":
                 // Shown on its own only when the tool never ran (rejected, or still waiting).
                 if let toolID = e["tool_use_id"], resultIDs.contains(toolID) { return nil }
                 let name = e["tool_name"] ?? "Tool"
                 let input = e["tool_parameters"]
                 return .init(id: id, date: e.date, kind: .tool(tool(
-                    name: name, input: input,
-                    decision: e["decision"], decisionSource: e["source"], success: nil, durationMs: nil, resultBytes: nil)))
+                    name: name, input: input, parameters: input,
+                    decision: e["decision"], decisionSource: e["source"], success: nil, error: nil, durationMs: nil, resultBytes: nil)))
             default:
                 let detail = e["hook_event"] ?? e["server_name"] ?? e["plugin.name"] ?? ""
                 return .init(id: id, date: e.date, kind: .system(name: e.name.replacingOccurrences(of: "_", with: " "), detail: detail))
@@ -105,12 +118,15 @@ enum Transcript {
         }
     }
 
-    private static func tool(name: String, input: String?, decision: String?, decisionSource: String?,
-                             success: Bool?, durationMs: Double?, resultBytes: Double?) -> TranscriptItem.Tool {
-        let redacted = input == redactedValue
-        return .init(name: name, summary: redacted ? "input redacted by policy" : summarize(tool: name, input: input),
-                     input: redacted ? nil : input, inputRedacted: redacted,
-                     decision: decision, decisionSource: decisionSource, success: success, durationMs: durationMs, resultBytes: resultBytes)
+    /// `input` is tool_input: file paths, URLs, the command, each value cut at 512 characters.
+    /// `parameters` is tool_parameters: for Bash, the whole command as `full_command`. Use it where it exists.
+    private static func tool(name: String, input: String?, parameters: String?, decision: String?, decisionSource: String?,
+                             success: Bool?, error: String?, durationMs: Double?, resultBytes: Double?) -> TranscriptItem.Tool {
+        let fullCommand = name == "Bash" ? parameters.map { summarize(tool: name, input: $0) }.flatMap { $0.isEmpty ? nil : $0 } : nil
+        let flags = Set(Flag.check(tool: name, input: input) + Flag.check(tool: name, input: parameters))
+        return .init(name: name, summary: fullCommand ?? summarize(tool: name, input: input), input: input,
+                     flags: Flag.allCases.filter(flags.contains),
+                     decision: decision, decisionSource: decisionSource, success: success, error: error, durationMs: durationMs, resultBytes: resultBytes)
     }
 
     /// A one-line description of a tool call: the command, the file, the pattern.
@@ -120,7 +136,11 @@ enum Transcript {
         func string(_ key: String) -> String? { (object[key] as? String).flatMap { $0.isEmpty ? nil : $0 } }
         func file(_ path: String) -> String { path.split(separator: "/").suffix(2).joined(separator: "/") }
 
-        if let command = string("command") ?? string("full_command") ?? string("bash_command") { return command }
+        if let command = string("command") ?? string("full_command") ?? string("bash_command") {
+            // One line: a heredoc's body is usually where the interesting part is.
+            return command.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }.joined(separator: " ↵ ")
+        }
         if let path = string("file_path") ?? string("notebook_path") { return file(path) }
         if let pattern = string("pattern") { return string("path").map { "\(pattern)  in \(file($0))" } ?? pattern }
         if let url = string("url") { return url }

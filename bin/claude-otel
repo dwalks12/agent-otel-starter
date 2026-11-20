@@ -1,6 +1,5 @@
 #!/bin/sh
-# Launch Claude Code with OpenTelemetry export pointed at the local policy relay,
-# which applies your AgentScope policy and forwards to the collector.
+# Launch Claude Code with OpenTelemetry export pointed at the local collector.
 # Usage: bin/claude-otel [any claude arguments]
 #
 # Why --settings and not just environment variables: an "env" block in your user
@@ -9,11 +8,10 @@
 # Settings passed on the command line rank above user settings.
 # (Exporter settings in a repository's own .claude/settings.json are ignored, too.)
 #
-# Content capture: prompts, Claude's replies and tool inputs are recorded so AgentScope
-# can show the full transcript. It all stays in your local ClickHouse. To record usage
-# only (tokens, cost, tool names), run with AGENT_OTEL_CONTENT=0. To keep recording but
-# hide prompts, replies, tool inputs or your identity, use the Policy page in AgentScope:
-# the relay redacts them before anything is stored.
+# Content capture: prompts, Claude's replies and tool inputs (commands, file paths, URLs)
+# are recorded so AgentScope can show the transcript and flag risky tool calls. Claude Code
+# leaves these off by default because they can hold secrets. Here it all stays in your
+# local ClickHouse. To record usage only (tokens, cost, tool names), run with AGENT_OTEL_CONTENT=0.
 endpoint="${OTEL_ENDPOINT_OVERRIDE:-http://localhost:4318}"
 if [ "${AGENT_OTEL_CONTENT:-1}" = "0" ]; then content=0; else content=1; fi
 

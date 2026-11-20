@@ -89,6 +89,12 @@ enum Format {
         return String(format: "%dh %02dm", s / 3600, s / 60 % 60)
     }
 
+    /// Time since a session started: 0:42, 12:05, 1:02:33
+    static func offset(_ date: Date, from start: Date) -> String {
+        let s = max(0, Int(date.timeIntervalSince(start)))
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
+    }
+
     /// "opus 5.5" from "claude-opus-5-5"
     static func modelName(_ raw: String) -> String {
         var name = raw.replacingOccurrences(of: "claude-", with: "")

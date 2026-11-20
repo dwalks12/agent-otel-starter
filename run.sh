@@ -35,7 +35,7 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 say "Starting ClickHouse and the OpenTelemetry Collector…"
-docker compose up -d --wait
+docker compose up -d --wait --remove-orphans
 
 if [ "$fresh" = 1 ]; then
   say "Wiping stored sessions and commits…"
@@ -50,8 +50,7 @@ fi
 cat <<EOF
 
   ClickHouse   http://localhost:8123  (scripts/query.sh sql/cost-per-session.sql)
-  OTLP         localhost:4318 (HTTP/JSON, through the policy relay)
-  Policy       http://localhost:4318/policy  (or the Policy page in the app)
+  OTLP         localhost:4318 (HTTP)
 
   Next, in another terminal:
     scripts/install-hooks.sh /path/to/a/repo   stamp commits with their session

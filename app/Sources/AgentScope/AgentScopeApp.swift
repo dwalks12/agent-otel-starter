@@ -5,8 +5,7 @@ import SwiftUI
 struct AgentScopeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = TelemetryStore(
-        client: ClickHouseClient(baseURL: URL(string: env("AGENT_OTEL_CLICKHOUSE_URL") ?? "http://localhost:8123")!),
-        relay: RelayClient(baseURL: URL(string: env("AGENT_OTEL_RELAY_URL") ?? "http://localhost:4318")!))
+        client: ClickHouseClient(baseURL: URL(string: env("AGENT_OTEL_CLICKHOUSE_URL") ?? "http://localhost:8123")!))
 
     var body: some Scene {
         WindowGroup("AgentScope") {
