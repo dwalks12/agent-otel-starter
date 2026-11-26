@@ -11,7 +11,7 @@ Claude Code ──OTLP──▶ OpenTelemetry Collector ──▶ ClickHouse ◀
 - **Claude Code** already exports OpenTelemetry: one log record per API request, with tokens and cost, plus one per tool call, hook run, plugin and MCP server.
 - The **OpenTelemetry Collector** receives it and writes it into **ClickHouse** (`otel.otel_logs`).
 - Two **git hooks** stamp each commit with the session that wrote it, so spend joins to code.
-- **AgentScope** is a small macOS app. **Live** has a tokens-per-minute gauge, 24-hour totals and the last hour per minute. **Session** shows one session's full transcript: every prompt, Claude's replies, each tool call with its input and result, and each model call with tokens and cost, plus per-tool stats, models and commits. Its **Behind the scenes** tab shows what you didn't see: tool calls that ran without asking you, model calls outside the conversation, hooks, plugins and MCP servers, and tool calls that match a risk rule. Its **Insights** tab has Claude read the session and suggest what to change so the next one goes better, with a public skill to install when one fits.
+- **AgentScope** is a small macOS app. **Live** has a tokens-per-minute gauge, 24-hour totals and the last hour per minute. **Session** shows one session's full transcript: every prompt, Claude's replies, each tool call with its input and result, and each model call with tokens and cost, plus per-tool stats, models and commits. Its **Behind the scenes** tab shows what you didn't see: tool calls that ran without asking you, model calls outside the conversation, hooks, plugins and MCP servers, and tool calls that match a risk rule. **Watchlist** shows every tool call or reply, in any session, that touched a URL, env key or path you listed in `watchlist.json`. The session's **Insights** tab has Claude read the session and suggest what to change so the next one goes better, with a public skill to install when one fits.
 
 Companion to the talk *Tracing coding agents with OpenTelemetry* (AI Tinkerers Calgary). The production version of this idea is [Terma](https://terma.ai).
 
@@ -58,6 +58,7 @@ Sessions show up in the app within about five seconds. `./run.sh down` stops the
 | `otel/config.yaml` | OTLP in, ClickHouse out |
 | `clickhouse/init.sql` | The `otel.agent_commits` table the post-commit hook writes |
 | `bin/claude-otel` | Runs `claude` with the OpenTelemetry env vars set |
+| `watchlist.json` | The URLs, env keys, paths and strings AgentScope alerts on |
 | `hooks/` | `prepare-commit-msg` adds `Agent-Session-Id`; `post-commit` records the commit |
 | `scripts/make-demo.sh` | Creates a demo repo with one failing test, a `.env` with a fake key, and the hooks installed; `--guard` adds a deny rule for `.env` |
 | `scripts/reset-data.sh` | Empties the stored sessions, metrics and commits (the tables stay) |
@@ -90,6 +91,32 @@ The flag rules are plain patterns, not a model, and a flag is not a verdict:
 | Edited a test | Edit or Write on `test_*`, `*_test.*`, `*.test.*`, `*.spec.*`, `tests/` |
 
 They need tool details, which `bin/claude-otel` turns on (`OTEL_LOG_TOOL_DETAILS=1`). Claude Code leaves that off by default for a reason: commands and file paths can hold secrets, so treat this database like one.
+
+## Watchlist
+
+The flags are generic. The watchlist is yours: the specific URLs, env keys, file paths and strings you never want an agent to touch. They live in `watchlist.json` at the repo root, as `"what to match": "why it matters"`:
+
+```json
+{
+  "urls":  { "webhook.site": "Free request catcher: a common place to send stolen data" },
+  "env":   { "STRIPE_SECRET_KEY": "The demo shop's payment key" },
+  "paths": { "~/.ssh/": "SSH keys" },
+  "text":  { "sk_live_": "A live Stripe secret key, in the open" }
+}
+```
+
+AgentScope checks every tool call's input (the command, file path, URL or MCP arguments) and every reply Claude writes against the list, across all sessions from the last 7 days. It reads the file again when you save it, so a new rule applies to past sessions too.
+
+| Section | Matches |
+|---|---|
+| `urls` | Anywhere in the call, any case |
+| `env` | The whole variable name, exact case: `$STRIPE_SECRET_KEY`, `STRIPE_SECRET_KEY=`, `os.environ["STRIPE_SECRET_KEY"]` |
+| `paths` | Anywhere in the call, any case; `~/` matches any home folder |
+| `text` | Exactly, case and all; good for key prefixes such as `sk_live_` |
+
+A hit shows up on the **Watchlist** page, as a banner on every page for 15 minutes, as a badge on the session in the sidebar, and in the session's **Behind the scenes** tab and transcript. Each hit says how the call ended: it ran, it was blocked and by whom, or the match was in Claude's reply. `./run.sh --seed` includes two sessions that hit the default list.
+
+Like the flags, this tells you after the fact. To stop the call, put the same thing in a deny rule or a `PreToolUse` hook (see below). Tool output isn't recorded, so a secret the agent read but never repeated won't match; a `text` rule catches one that shows up in a command or a reply.
 
 ## Insights
 
@@ -161,6 +188,7 @@ It's a demo, kept small enough to read in one sitting. In production you'd want:
 - **Why `bin/claude-otel` passes `--settings`:** an `env` block in `~/.claude/settings.json` beats your shell environment. If another tool already set up an exporter there, plain `export OTEL_...` lines are silently ignored. Settings passed on the command line rank above user settings, so the wrapper wins. Your other telemetry flags from user settings (for example `OTEL_LOG_USER_PROMPTS`) still apply, and that data stays in your local ClickHouse.
 - **Ports in use:** ClickHouse uses 8123 and the collector 4318, both on 127.0.0.1. Change them in `docker-compose.yml` and set `AGENT_OTEL_CLICKHOUSE_URL` and `OTEL_ENDPOINT_OVERRIDE` to match.
 - **Generate insights says it couldn't run claude:** the app runs the `claude` on your `PATH`, so start it from a terminal where `claude` works (`./run.sh` does).
+- **Watchlist says there's no watchlist:** start the app with `./run.sh`, or set `AGENT_OTEL_WATCHLIST` to the file's full path. A typo in a section name shows as a warning on the page.
 - **Behind the scenes shows no flags or commands:** the session wasn't launched through `bin/claude-otel`, or ran with `AGENT_OTEL_CONTENT=0`, so tool inputs weren't recorded.
 
 ## License

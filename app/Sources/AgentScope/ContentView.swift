@@ -5,13 +5,30 @@ struct ContentView: View {
     @Bindable var store: TelemetryStore
 
     enum Page: String, CaseIterable, Identifiable {
-        case live = "Live", session = "Session"
+        case live = "Live", session = "Session", watchlist = "Watchlist"
         var id: String { rawValue }
     }
 
     /// Remembered between launches.
     @AppStorage("page") private var page: Page = .live
     @State private var columns: NavigationSplitViewVisibility = .all
+    @State private var dismissedAlert: String?
+
+    private func open(session id: String) {
+        store.selectedSessionID = id
+        page = .session
+    }
+
+    private var titles: [String: String] {
+        Dictionary(store.sessions.compactMap { s in s.title.map { (s.sessionID, $0) } }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// The newest watchlist hit, while it's under 15 minutes old and not dismissed.
+    private var alertHit: WatchHit? {
+        guard page != .watchlist, let hit = store.watchHits.first, hit.id != dismissedAlert,
+              hit.date > .now.addingTimeInterval(-15 * 60) else { return nil }
+        return hit
+    }
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columns) {
@@ -22,12 +39,18 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header
                     if let error = store.error { ErrorBanner(message: error) }
+                    if let hit = alertHit {
+                        WatchAlert(hit: hit, session: titles[hit.sessionID] ?? "Session \(Format.shortID(hit.sessionID))",
+                                   open: { open(session: hit.sessionID) }, dismiss: { dismissedAlert = hit.id })
+                    }
                     switch page {
                     case .live: livePage
+                    case .watchlist:
+                        WatchlistPage(watchlist: store.watchlist, hits: store.watchHits, titles: titles) { open(session: $0) }
                     case .session:
                         if let session = store.selectedSession {
                             SessionDetail(session: session, models: store.models, commits: store.commits,
-                                          transcript: store.transcript, backstage: store.backstage,
+                                          transcript: store.transcript, backstage: store.backstage, watchHits: store.sessionWatchHits,
                                           insights: store.insights, insightsRunning: store.insightsRunning.contains(session.sessionID),
                                           insightsError: store.insightsError) { Task { await store.generateInsights() } }
                         } else {
@@ -56,20 +79,22 @@ struct ContentView: View {
         switch page {
         case .live: "Tokens your agents are burning on this machine, read from your local ClickHouse"
         case .session: "Every prompt, reply, model call and tool call, what ran behind the scenes, and what to change"
+        case .watchlist: "URLs, env keys, paths and strings you never want an agent to touch, checked against every tool call and reply"
         }
     }
 
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(page == .live ? "Live burn" : "Session")
+                Text(page == .live ? "Live burn" : page.rawValue)
                     .font(.system(size: 30, weight: .bold, design: .rounded)).foregroundStyle(Theme.text)
                 Text(subtitle)
                     .font(.system(size: 13)).foregroundStyle(Theme.body)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 10) {
-                PillTabs(options: Page.allCases.map { ($0, $0.rawValue) }, selection: $page)
+                PillTabs(options: Page.allCases.map { ($0, $0 == .watchlist && !store.watchHits.isEmpty ? "Watchlist · \(store.watchHits.count)" : $0.rawValue) },
+                         selection: $page)
                 LiveIndicator(updated: store.lastUpdated, failing: store.error != nil)
             }
         }
@@ -241,7 +266,7 @@ struct SessionList: View {
                 LazyVStack(spacing: 6) {
                     ForEach(store.sessions) { session in
                         SessionRowView(session: session, selected: session.sessionID == store.selectedSessionID,
-                                       maxSpend: store.maxSessionSpend)
+                                       maxSpend: store.maxSessionSpend, watchHits: store.watchHitsBySession[session.sessionID] ?? 0)
                             .onTapGesture {
                                 store.selectedSessionID = session.sessionID
                                 onOpen()
@@ -266,11 +291,19 @@ struct SessionRowView: View {
     var session: SessionRow
     var selected: Bool
     var maxSpend: Double
+    var watchHits = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 ForEach(session.modelList.prefix(2), id: \.self) { ModelChip(model: $0) }
+                if watchHits > 0 {
+                    Label("\(watchHits)", systemImage: "exclamationmark.shield.fill")
+                        .font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.hot)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Theme.hot.opacity(0.14), in: Capsule())
+                        .help("\(watchHits) watchlist hit\(watchHits == 1 ? "" : "s")")
+                }
                 Spacer()
                 Text(Format.relative(session.lastSeenAt)).font(.system(size: 10)).foregroundStyle(Theme.muted)
             }

@@ -1,0 +1,41 @@
+{
+  "_about": "Things you never want an agent to touch. AgentScope checks every tool call (command, file path, URL) and every reply Claude writes against this list, and reads the file again when it changes. urls and paths ignore case, and a path starting with ~/ matches any home folder. env matches the whole variable name, exact case. text matches exactly. Each entry is \"what to match\": \"why it matters\".",
+
+  "urls": {
+    "webhook.site": "Free request catcher: a common place to send stolen data",
+    "requestbin": "Request catcher, used the same way",
+    "pipedream.net": "Request catcher, used the same way",
+    "ngrok-free.app": "A tunnel to someone else's machine",
+    "ngrok.io": "A tunnel to someone else's machine",
+    "pastebin.com": "Public paste site",
+    "transfer.sh": "Anonymous file upload",
+    "interact.sh": "Out-of-band callback host used to confirm an exploit worked",
+    "burpcollaborator.net": "Out-of-band callback host used to confirm an exploit worked",
+    "169.254.169.254": "Cloud metadata service: hands out the machine's cloud credentials"
+  },
+
+  "env": {
+    "STRIPE_SECRET_KEY": "The demo shop's payment key",
+    "AWS_SECRET_ACCESS_KEY": "AWS credentials",
+    "GITHUB_TOKEN": "Push access to your repositories",
+    "NPM_TOKEN": "Publish access to your packages",
+    "ANTHROPIC_API_KEY": "A leaked model key becomes someone else's token bill",
+    "OPENAI_API_KEY": "A leaked model key becomes someone else's token bill"
+  },
+
+  "paths": {
+    "~/.ssh/": "SSH keys",
+    "~/.aws/credentials": "AWS credentials",
+    "~/.config/gh/hosts.yml": "The GitHub CLI's token, which the 2025 Nx attack went looking for",
+    "~/.npmrc": "npm publish token",
+    "~/.docker/config.json": "Container registry logins",
+    "~/.kube/config": "Kubernetes cluster access",
+    "Library/Keychains": "macOS keychains"
+  },
+
+  "text": {
+    "sk_live_": "A live Stripe secret key, in the open",
+    "PRIVATE KEY-----": "A private key, in the open",
+    "ghp_": "A GitHub personal access token, in the open"
+  }
+}

@@ -7,6 +7,7 @@ struct SessionDetail: View {
     var commits: [CommitRow]
     var transcript: [TranscriptItem]
     var backstage: Backstage
+    var watchHits: [WatchHit] = []
     var insights: SessionInsights?
     var insightsRunning: Bool
     var insightsError: String?
@@ -28,6 +29,13 @@ struct SessionDetail: View {
         }
     }
 
+    /// One count at most, so the tabs stay on one line: watchlist hits first, then flags.
+    private var backstageLabel: String {
+        if !watchHits.isEmpty { return "Behind the scenes · \(watchHits.count) on watchlist" }
+        if !flagged.isEmpty { return "Behind the scenes · \(flagged.count) flagged" }
+        return "Behind the scenes"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             hero
@@ -40,7 +48,7 @@ struct SessionDetail: View {
             Panel {
                 PillTabs(options: [(.transcript, "Transcript"),
                                    (.insights, insights.map { "Insights · \($0.insights.count)" } ?? "Insights"),
-                                   (.backstage, flagged.isEmpty ? "Behind the scenes" : "Behind the scenes · \(flagged.count) flagged"),
+                                   (.backstage, backstageLabel),
                                    (.tools, "Tools · \(toolCalls)"),
                                    (.models, "Models · \(models.count)"), (.commits, "Commits · \(commits.count)")],
                          selection: $tab)
@@ -95,6 +103,7 @@ struct SessionDetail: View {
 
     private var transcriptView: some View {
         let start = transcript.first?.date ?? session.startedAt
+        let watched = Dictionary(watchHits.map { ($0.id, $0.rules) }, uniquingKeysWith: +)
         let visible = transcript.filter { item in
             if item.isSystem { return showSystem }
             if case .request = item.kind { return showRequests }
@@ -113,7 +122,8 @@ struct SessionDetail: View {
             }
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(visible.enumerated()), id: \.element.id) { index, item in
-                    TimelineRow(item: item, offset: offset(item.date, from: start), isLast: index == visible.count - 1)
+                    TimelineRow(item: item, offset: offset(item.date, from: start), isLast: index == visible.count - 1,
+                                watched: watched[item.id] ?? [])
                 }
             }
         }
@@ -175,6 +185,14 @@ struct SessionDetail: View {
         let b = backstage
         let start = transcript.first?.date ?? session.startedAt
         return VStack(alignment: .leading, spacing: 18) {
+            if !watchHits.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    sectionTitle("On your watchlist")
+                    ForEach(watchHits.reversed()) { hit in
+                        WatchHitRow(hit: hit, time: offset(hit.date, from: start))
+                    }
+                }
+            }
             HStack(spacing: 12) {
                 Fact(icon: "hand.raised.slash.fill", tint: Theme.warm, label: "Auto-approved",
                      value: "\(b.allowed - b.askedYou) of \(b.allowed)",
@@ -215,6 +233,11 @@ struct SessionDetail: View {
                                       text: "Managed settings in effect: " + b.managedSources.joined(separator: ", "), trailing: nil)
                     }
                 }
+            }
+
+            if watchHits.isEmpty {
+                backstageLine(icon: "binoculars.fill", tint: Theme.muted,
+                              text: "Nothing on your watchlist. Add URLs, env keys and paths to watchlist.json.", trailing: nil)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -530,9 +553,12 @@ struct TimelineRow: View {
     var item: TranscriptItem
     var offset: String
     var isLast: Bool
+    /// Watchlist rules this step matched.
+    var watched: [WatchRule] = []
 
     private var node: (icon: String, tint: Color, size: CGFloat) {
-        switch item.kind {
+        if !watched.isEmpty { return ("exclamationmark.shield.fill", Theme.hot, 22) }
+        return switch item.kind {
         case .prompt: ("person.fill", Theme.accent, 26)
         case .response: ("sparkles", Theme.good, 26)
         case .request: ("arrow.up.arrow.down", Theme.muted, 18)
@@ -565,7 +591,7 @@ struct TimelineRow: View {
                     .padding(.top, node.size < 22 ? 4 : 0)
             }
             .frame(width: 26)
-            TranscriptRow(item: item)
+            TranscriptRow(item: item, watched: watched)
                 .padding(.bottom, 12)
         }
     }
@@ -574,6 +600,7 @@ struct TimelineRow: View {
 /// The content of a timeline step, drawn according to what kind of event it is.
 struct TranscriptRow: View {
     var item: TranscriptItem
+    var watched: [WatchRule] = []
     @State private var expanded = false
 
     var body: some View {
@@ -583,7 +610,7 @@ struct TranscriptRow: View {
                    missing: "Prompt text not captured\(length.map { " (\($0) characters)" } ?? ""). Launch Claude Code with bin/claude-otel to record it.")
         case .response(let text, let model, let length):
             bubble(title: "Claude" + (model.map { " · \(Format.modelName($0))" } ?? ""), tint: Theme.good, text: text,
-                   missing: "Reply not captured\(length.map { " (\($0) characters)" } ?? "").")
+                   missing: "Reply not captured\(length.map { " (\($0) characters)" } ?? "").", watched: watched)
         case .request(let model, let usage, let duration, let ttft):
             HStack(spacing: 8) {
                 ModelChip(model: model)
@@ -617,9 +644,12 @@ struct TranscriptRow: View {
             .background(Theme.stroke.opacity(0.45), in: Capsule())
     }
 
-    private func bubble(title: String, tint: Color, text: String?, missing: String) -> some View {
+    private func bubble(title: String, tint: Color, text: String?, missing: String, watched: [WatchRule] = []) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.system(size: 11, weight: .bold)).foregroundStyle(tint)
+            HStack(spacing: 8) {
+                Text(title).font(.system(size: 11, weight: .bold)).foregroundStyle(tint)
+                ForEach(watched) { WatchRulePill(rule: $0) }
+            }
             if let text {
                 Text(markdown(text)).font(.system(size: 14)).lineSpacing(3).foregroundStyle(Theme.text).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -644,6 +674,7 @@ struct TranscriptRow: View {
                         .foregroundStyle(Theme.body)
                         .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 8)
+                    ForEach(watched) { WatchRulePill(rule: $0) }
                     ForEach(tool.flags) { flag in
                         Label(flag.title, systemImage: flag.icon)
                             .font(.system(size: 11, weight: .semibold)).lineLimit(1)

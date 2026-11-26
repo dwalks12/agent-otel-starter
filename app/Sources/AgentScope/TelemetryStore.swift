@@ -11,11 +11,18 @@ final class TelemetryStore {
     var totals = Totals.empty
     var perMinute: [MinuteBucket] = []
     var sessions: [SessionRow] = []
-    var selectedSessionID: String? { didSet { if selectedSessionID != oldValue { models = []; commits = []; transcript = []; backstage = Backstage(); insights = nil; insightsError = nil } } }
+    var selectedSessionID: String? { didSet { if selectedSessionID != oldValue { models = []; commits = []; transcript = []; backstage = Backstage(); sessionWatchHits = []; insights = nil; insightsError = nil } } }
     var models: [ModelRow] = []
     var commits: [CommitRow] = []
     var transcript: [TranscriptItem] = []
     var backstage = Backstage()
+    /// watchlist.json, read again when it changes.
+    var watchlist = Watchlist()
+    /// Watchlist hits across every session in the last 7 days, newest first.
+    var watchHits: [WatchHit] = []
+    var watchHitsBySession: [String: Int] = [:]
+    /// Watchlist hits in the selected session, from all of its events.
+    var sessionWatchHits: [WatchHit] = []
     /// The stored analysis of the selected session; nil until someone asks for one.
     var insights: SessionInsights?
     /// Sessions being analysed right now.
@@ -54,6 +61,8 @@ final class TelemetryStore {
                 try await client.execute(Queries.createInsights)
                 insightsTableReady = true
             }
+            if let fresh = watchlist.reloaded() { watchlist = fresh }
+            async let candidates = watchCandidates(needles: watchlist.needles)
             async let live = client.rows(Queries.live, as: Usage.self)
             async let totals = client.rows(Queries.totals, as: Totals.self)
             async let perMinute = client.rows(Queries.perMinute, as: MinuteBucket.self)
@@ -64,6 +73,8 @@ final class TelemetryStore {
             self.perMinute = try await perMinute
             let titles = Dictionary(try await prompts.map { ($0.sessionID, $0.prompt) }, uniquingKeysWith: { a, _ in a })
             self.sessions = try await sessions.map { var row = $0; row.title = titles[row.sessionID]; return row }
+            self.watchHits = watchlist.hits(in: try await candidates)
+            self.watchHitsBySession = watchHits.reduce(into: [:]) { $0[$1.sessionID, default: 0] += 1 }
 
             if selectedSessionID == nil { selectedSessionID = self.sessions.first?.sessionID }
             if let id = selectedSessionID {
@@ -76,6 +87,7 @@ final class TelemetryStore {
                 let events = try await rawEvents
                 self.transcript = Transcript.build(events)
                 self.backstage = Backstage.from(events)
+                self.sessionWatchHits = watchlist.hits(in: events)
                 let stored = try await insights.first
                 // The selection may have moved while the queries ran, and an analysis that just
                 // finished is newer than what this query read.
@@ -88,6 +100,11 @@ final class TelemetryStore {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Events that might match the watchlist; none when the list is empty.
+    private func watchCandidates(needles: [String]) async throws -> [RawEvent] {
+        needles.isEmpty ? [] : try await client.rows(Queries.watchCandidates(needles: needles), as: RawEvent.self)
     }
 
     /// Asks Claude to review the selected session, and stores what it writes.

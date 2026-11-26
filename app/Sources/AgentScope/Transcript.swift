@@ -77,7 +77,7 @@ enum Transcript {
         let resultIDs = Set(events.filter { $0.name == "tool_result" }.compactMap { $0["tool_use_id"] })
 
         return events.compactMap { e -> TranscriptItem? in
-            let id = "\(Int(e.timeMs))-\(e.sequence)-\(e.name)"
+            let id = itemID(e)
             switch e.name {
             case "user_prompt":
                 return .init(id: id, date: e.date, kind: .prompt(text: e["prompt"] ?? e["prompt_text"],
@@ -118,13 +118,20 @@ enum Transcript {
         }
     }
 
+    /// The transcript item an event becomes. Watchlist hits use it to point back at the same item.
+    static func itemID(_ e: RawEvent) -> String { "\(Int(e.timeMs))-\(e.sequence)-\(e.name)" }
+
     /// `input` is tool_input: file paths, URLs, the command, each value cut at 512 characters.
     /// `parameters` is tool_parameters: for Bash, the whole command as `full_command`. Use it where it exists.
+    static func summary(tool name: String, input: String?, parameters: String?) -> String {
+        let fullCommand = name == "Bash" ? parameters.map { summarize(tool: name, input: $0) }.flatMap { $0.isEmpty ? nil : $0 } : nil
+        return fullCommand ?? summarize(tool: name, input: input)
+    }
+
     private static func tool(name: String, input: String?, parameters: String?, decision: String?, decisionSource: String?,
                              success: Bool?, error: String?, durationMs: Double?, resultBytes: Double?) -> TranscriptItem.Tool {
-        let fullCommand = name == "Bash" ? parameters.map { summarize(tool: name, input: $0) }.flatMap { $0.isEmpty ? nil : $0 } : nil
         let flags = Set(Flag.check(tool: name, input: input) + Flag.check(tool: name, input: parameters))
-        return .init(name: name, summary: fullCommand ?? summarize(tool: name, input: input), input: input,
+        return .init(name: name, summary: summary(tool: name, input: input, parameters: parameters), input: input,
                      flags: Flag.allCases.filter(flags.contains),
                      decision: decision, decisionSource: decisionSource, success: success, error: error, durationMs: durationMs, resultBytes: resultBytes)
     }

@@ -51,6 +51,7 @@ cat <<EOF
 
   ClickHouse   http://localhost:8123  (scripts/query.sh sql/cost-per-session.sql)
   OTLP         localhost:4318 (HTTP)
+  Watchlist    $(pwd)/watchlist.json  (URLs, env keys and paths to alert on)
 
   Next, in another terminal:
     scripts/install-hooks.sh /path/to/a/repo   stamp commits with their session
@@ -59,4 +60,5 @@ cat <<EOF
 EOF
 
 say "Building and opening AgentScope (the first build takes a minute)…"
+export AGENT_OTEL_WATCHLIST="${AGENT_OTEL_WATCHLIST:-$(pwd)/watchlist.json}"
 exec swift run -c release --package-path app AgentScope

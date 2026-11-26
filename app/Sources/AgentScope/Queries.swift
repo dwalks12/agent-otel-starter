@@ -87,6 +87,36 @@ enum Queries {
         """
     }
 
+    /// Tool calls and replies from every session in the last 7 days that might match the watchlist.
+    /// ClickHouse narrows them with a case-insensitive search for each rule's string; Watchlist.hits makes
+    /// the exact call. A tool call's other half (its decision or result) comes along through tool_use_id.
+    static func watchCandidates(needles: [String]) -> String {
+        let text = "concat(LogAttributes['tool_input'], ' ', LogAttributes['tool_parameters'], ' ', LogAttributes['response'])"
+        // multiSearchAny takes at most 255 needles per call.
+        let search = stride(from: 0, to: needles.count, by: 200).map { start in
+            "multiSearchAnyCaseInsensitiveUTF8(\(text), [\(needles[start..<min(start + 200, needles.count)].map(quoted).joined(separator: ", "))])"
+        }.joined(separator: " OR ")
+        let recent = """
+            LogAttributes['event.name'] IN ('tool_decision', 'tool_result', 'assistant_response')
+              AND Timestamp >= now64(9) - INTERVAL 7 DAY
+            """
+        return """
+            SELECT toUInt64OrZero(LogAttributes['event.sequence']) AS seq,
+                   toUnixTimestamp64Milli(Timestamp) AS ts_ms,
+                   LogAttributes['event.name'] AS ev,
+                   mapFilter((k, v) -> k IN ('session.id', 'tool_use_id', 'tool_name', 'decision', 'source', 'success',
+                                             'tool_input', 'tool_parameters', 'response'), LogAttributes) AS attrs
+            FROM otel.otel_logs
+            WHERE \(recent)
+              AND ((\(search))
+                   OR LogAttributes['tool_use_id'] IN (
+                       SELECT LogAttributes['tool_use_id'] FROM otel.otel_logs
+                       WHERE \(recent) AND LogAttributes['tool_use_id'] != '' AND (\(search))))
+            ORDER BY ts_ms DESC, seq DESC
+            LIMIT 2000
+            """
+    }
+
     static func commits(session: String) -> String {
         """
         SELECT sha, repo, subject, toUnixTimestamp(committed_at) AS committed_at, files, insertions, deletions
